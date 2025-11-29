@@ -1,0 +1,36 @@
+{
+  "name": "lab_6",
+  "version": "1.0.0",
+  "description": "",
+  "main": "main.js",
+  "type": "module",
+  "scripts": {
+  "test": "echo \"Error: no test specified\" && exit 1",
+  "start:dev": "nodemon main.js -- -h localhost -p 3000 -c ./my-cache",
+  "start:dev-docker": "nodemon --inspect=0.0.0.0:9229 main.js" 
+},
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/olesia-oksana-borutsa/backend-course-2025-6.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/olesia-oksana-borutsa/backend-course-2025-6/issues"
+  },
+  "homepage": "https://github.com/olesia-oksana-borutsa/backend-course-2025-6#readme",
+  "dependencies": {
+    "commander": "^14.0.2",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "multer": "^2.0.2",
+    "pg": "^8.16.3",
+    "superagent": "^10.2.3",
+    "swagger-jsdoc": "^6.2.8",
+    "swagger-ui-express": "^5.0.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.11"
+  }
+}
