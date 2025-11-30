@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  # 1. Сервіс Бази Даних (PostgreSQL)
+  db:
+    image: postgres:15-alpine
+    container_name: postgres_db
+    restart: always
+    environment:
+      # Змінні для ініціалізації БД, беруться з .env
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    ports:
+      - "5432:5432"
+    volumes:
+      # Зберігання даних БД
+      - postgres_data:/var/lib/postgresql/data
+      # Скрипт ініціалізації БД (вимоги Частини 2)
+      - ./init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
+
+  # 2. Сервіс Додатка (Node.js/Express)
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev # Використовуємо Dockerfile для розробки з nodemon
+    container_name: node_app
+    restart: always
+    environment:
+      # Передача всіх змінних оточення з .env до Node.js додатка
+      HOST: ${HOST}
+      PORT: ${PORT}
+      CACHE_DIR: ${CACHE_DIR}
+      DB_HOST: ${DB_HOST}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME}
+    ports:
+      - "3000:3000"
+      - "9229:9229" # Порт для відлагодження (вимоги Частини 3)
+    volumes:
+      # Монтування коду для миттєвого перезапуску nodemon (вимоги Частини 3)
+      - .:/app
+      # Виключення node_modules з монтування
+      - /app/node_modules
+      # Монтування кеш-директорії (для фото)
+      - ./my-cache:/app/my-cache
+    depends_on:
+      - db
+    # Команда запуску з nodemon та відлагодженням
+    command: npm run start:dev-docker
+
+volumes:
+  postgres_data:

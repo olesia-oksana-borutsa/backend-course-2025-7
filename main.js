@@ -1,31 +1,46 @@
-import { Command } from "commander";
+import 'dotenv/config'; // Завантажує змінні з .env
 import express from "express";
 import fs from "fs";
 import path from "path";
 import multer from "multer";
 import swaggerUi from "swagger-ui-express";
 import swaggerJsdoc from "swagger-jsdoc";
+import pkg from 'pg'; // Для роботи з PostgreSQL
+const { Client } = pkg;
 
-const program = new Command();
+// --- КОНФІГУРАЦІЯ ЗІ ЗМІННИХ ОТОЧЕННЯ (process.env) ---
+const host = process.env.HOST || '0.0.0.0';
+const port = process.env.PORT || 3000;
+const cache = process.env.CACHE_DIR || './my-cache';
 
-program
-  .requiredOption("-h, --host <host>")
-  .requiredOption("-p, --port <port>")
-  .requiredOption("-c, --cache <cacheDir>");
+const dbConfig = {
+  host: process.env.DB_HOST,
+  port: process.env.DB_PORT,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
+};
 
-program.parse(process.argv);
+// Функція-обгортка для виконання SQL-запитів
+const query = async (text, params) => {
+  const client = new Client(dbConfig);
+  await client.connect();
+  try {
+    const res = await client.query(text, params);
+    return res;
+  } catch (err) {
+    console.error("Database query error:", err);
+    throw err;
+  } finally {
+    await client.end();
+  }
+};
+// --- КІНЕЦЬ КОНФІГУРАЦІЇ ---
 
-const { host, port, cache } = program.opts();
-
+// Створення директорії кешу для фотографій
 if (!fs.existsSync(cache)) fs.mkdirSync(cache, { recursive: true });
 
-const dbPath = path.join(cache, "inventory.json");
-if (!fs.existsSync(dbPath)) fs.writeFileSync(dbPath, JSON.stringify([]));
-
-const readDB = () => JSON.parse(fs.readFileSync(dbPath, "utf-8"));
-const writeDB = (data) =>
-  fs.writeFileSync(dbPath, JSON.stringify(data, null, 2));
-
+// Налаштування Multer для збереження файлів у директорії кешу
 const storage = multer.diskStorage({
   destination: (_, __, cb) => cb(null, cache),
   filename: (_, file, cb) => cb(null, Date.now() + path.extname(file.originalname)),
@@ -71,7 +86,7 @@ app.get("/SearchForm.html", (_, res) =>
   res.sendFile(path.resolve("SearchForm.html"))
 );
 
-//POST /register
+// POST /register
 
 /**
  * @swagger
@@ -100,24 +115,30 @@ app.get("/SearchForm.html", (_, res) =>
  *       400:
  *         description: Поганий запит
  */
-app.post("/register", upload.single("photo"), (req, res) => {
+app.post("/register", upload.single("photo"), async (req, res) => {
   const { inventory_name, description } = req.body;
   if (!inventory_name) return res.sendStatus(400);
 
-  const items = readDB();
   const newItem = {
     id: Date.now().toString(),
     name: inventory_name,
     description: description || "",
     photo: req.file ? req.file.filename : null,
   };
-  items.push(newItem);
-  writeDB(items);
-  res.status(201).json(newItem);
+
+  try {
+    await query(
+      "INSERT INTO items (id, name, description, photo) VALUES ($1, $2, $3, $4)",
+      [newItem.id, newItem.name, newItem.description, newItem.photo]
+    );
+    res.status(201).json(newItem);
+  } catch (error) {
+    res.status(500).send("Database error during registration.");
+  }
 });
 
 // get:/inventory:
- 
+
 /**
  * @swagger
  * /inventory:
@@ -127,15 +148,20 @@ app.post("/register", upload.single("photo"), (req, res) => {
  *       200:
  *         description: Масив речей
  */
-app.get("/inventory", (_, res) => {
-  const items = readDB().map((i) => ({
-    ...i,
-    photo_url: i.photo ? `/inventory/${i.id}/photo` : null,
-  }));
-  res.json(items);
+app.get("/inventory", async (_, res) => {
+  try {
+    const result = await query("SELECT id, name, description, photo FROM items ORDER BY id DESC");
+    const items = result.rows.map((i) => ({
+      ...i,
+      photo_url: i.photo ? `/inventory/${i.id}/photo` : null,
+    }));
+    res.json(items);
+  } catch (error) {
+    res.status(500).send("Database error retrieving inventory.");
+  }
 });
 
-//    get:/inventory/{id}:
+// get:/inventory/{id}:
 
 /**
  * @swagger
@@ -154,17 +180,24 @@ app.get("/inventory", (_, res) => {
  *       404:
  *         description: Не знайдено
  */
-app.get("/inventory/:id", (req, res) => {
-  const item = readDB().find((i) => i.id === req.params.id);
-  if (!item) return res.sendStatus(404);
-  res.json({
-    ...item,
-    photo_url: item.photo ? `/inventory/${item.id}/photo` : null,
-  });
+app.get("/inventory/:id", async (req, res) => {
+  try {
+    const result = await query("SELECT id, name, description, photo FROM items WHERE id = $1", [req.params.id]);
+    const item = result.rows[0];
+
+    if (!item) return res.sendStatus(404);
+
+    res.json({
+      ...item,
+      photo_url: item.photo ? `/inventory/${item.id}/photo` : null,
+    });
+  } catch (error) {
+    res.status(500).send("Database error retrieving item.");
+  }
 });
 
-//  put:/inventory/{id}:
- 
+// put:/inventory/{id}:
+
 /**
  * @swagger
  * /inventory/{id}:
@@ -193,18 +226,36 @@ app.get("/inventory/:id", (req, res) => {
  *       404:
  *         description: Не знайдено
  */
-app.put("/inventory/:id", (req, res) => {
-  const items = readDB();
-  const item = items.find((i) => i.id === req.params.id);
-  if (!item) return res.sendStatus(404);
+app.put("/inventory/:id", async (req, res) => {
+  const { name, description } = req.body;
+  let setClauses = [];
+  let params = [];
+  let paramIndex = 1;
 
-  if (req.body.name) item.name = req.body.name;
-  if (req.body.description) item.description = req.body.description;
-  writeDB(items);
-  res.json(item);
+  if (name) {
+    setClauses.push(`name = $${paramIndex++}`);
+    params.push(name);
+  }
+  if (description) {
+    setClauses.push(`description = $${paramIndex++}`);
+    params.push(description);
+  }
+
+  if (setClauses.length === 0) return res.status(400).send("No fields to update.");
+
+  params.push(req.params.id); // ID завжди останній параметр
+  const updateQuery = `UPDATE items SET ${setClauses.join(", ")} WHERE id = $${paramIndex} RETURNING *`;
+
+  try {
+    const result = await query(updateQuery, params);
+    if (result.rowCount === 0) return res.sendStatus(404);
+    res.json(result.rows[0]);
+  } catch (error) {
+    res.status(500).send("Database error during update.");
+  }
 });
 
-//    get:/inventory/{id}/photo:
+// get:/inventory/{id}/photo:
 
 /**
  * @swagger
@@ -221,16 +272,22 @@ app.put("/inventory/:id", (req, res) => {
  *       404:
  *         description: Фото не знайдено
  */
-app.get("/inventory/:id/photo", (req, res) => {
-  const item = readDB().find((i) => i.id === req.params.id);
-  if (!item || !item.photo) return res.sendStatus(404);
+app.get("/inventory/:id/photo", async (req, res) => {
+  try {
+    const result = await query("SELECT photo FROM items WHERE id = $1", [req.params.id]);
+    const item = result.rows[0];
 
-  const photoPath = path.resolve(cache, item.photo);
-  if (!fs.existsSync(photoPath)) return res.sendStatus(404);
-  res.sendFile(photoPath);
+    if (!item || !item.photo) return res.sendStatus(404);
+
+    const photoPath = path.resolve(cache, item.photo);
+    if (!fs.existsSync(photoPath)) return res.sendStatus(404);
+    res.sendFile(photoPath);
+  } catch (error) {
+    res.status(500).send("Database error retrieving photo path.");
+  }
 });
 
-//   put:/inventory/{id}/photo:
+// put:/inventory/{id}/photo:
 
 /**
  * @swagger
@@ -257,22 +314,36 @@ app.get("/inventory/:id/photo", (req, res) => {
  *       404:
  *         description: Не знайдено
  */
-app.put("/inventory/:id/photo", upload.single("photo"), (req, res) => {
-  const items = readDB();
-  const item = items.find((i) => i.id === req.params.id);
-  if (!item) return res.sendStatus(404);
+app.put("/inventory/:id/photo", upload.single("photo"), async (req, res) => {
   if (!req.file) return res.status(400).send("No photo uploaded.");
-  if (item.photo) {
-    const oldPath = path.resolve(cache, item.photo);
-    if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+
+  try {
+    // 1. Отримати старе ім'я файлу для видалення
+    let result = await query("SELECT photo FROM items WHERE id = $1", [req.params.id]);
+    if (result.rowCount === 0) return res.sendStatus(404);
+    const oldPhoto = result.rows[0].photo;
+
+    // 2. Оновити запис у БД новим ім'ям
+    result = await query("UPDATE items SET photo = $1 WHERE id = $2 RETURNING *", [
+      req.file.filename,
+      req.params.id,
+    ]);
+    const item = result.rows[0];
+
+    // 3. Видалити старий файл
+    if (oldPhoto) {
+      const oldPath = path.resolve(cache, oldPhoto);
+      if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+    }
+
+    res.json(item);
+  } catch (error) {
+    res.status(500).send("Database error during photo update.");
   }
-  item.photo = req.file.filename;
-  writeDB(items);
-  res.json(item);
 });
 
-//   delete:/inventory/{id}:
- 
+// delete:/inventory/{id}:
+
 /**
  * @swagger
  * /inventory/{id}:
@@ -288,23 +359,32 @@ app.put("/inventory/:id/photo", upload.single("photo"), (req, res) => {
  *       404:
  *         description: Не знайдено
  */
-app.delete("/inventory/:id", (req, res) => {
-  const items = readDB();
-  const index = items.findIndex((i) => i.id === req.params.id);
-  if (index === -1) return res.sendStatus(404);
+app.delete("/inventory/:id", async (req, res) => {
+  try {
+    // 1. Отримати ім'я файлу для видалення
+    let result = await query("SELECT photo FROM items WHERE id = $1", [req.params.id]);
+    if (result.rowCount === 0) return res.sendStatus(404);
+    const item = result.rows[0];
 
-  const item = items[index];
-  if (item.photo) {
-    const oldPath = path.resolve(cache, item.photo);
-    if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+    // 2. Видалити запис із БД
+    const deleteResult = await query("DELETE FROM items WHERE id = $1", [req.params.id]);
+
+    if (deleteResult.rowCount === 0) return res.sendStatus(404);
+
+    // 3. Видалити файл (якщо є)
+    if (item.photo) {
+      const oldPath = path.resolve(cache, item.photo);
+      if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+    }
+
+    res.sendStatus(200);
+  } catch (error) {
+    res.status(500).send("Database error during deletion.");
   }
-  items.splice(index, 1);
-  writeDB(items);
-  res.sendStatus(200);
 });
 
-//   post:/search:
- 
+// post:/search:
+
 /**
  * @swagger
  * /search:
@@ -324,29 +404,35 @@ app.delete("/inventory/:id", (req, res) => {
  *               includePhoto:
  *                 type: string
  *     responses:
- *       201:
+ *       200:
  *         description: Знайдено
  *       404:
  *         description: Не знайдено
  */
-app.post("/search", (req, res) => {
+app.post("/search", async (req, res) => {
   const { id, includePhoto } = req.body;
 
-  const item = readDB().find((i) => i.id === id);
-  if (!item) return res.sendStatus(404);
+  try {
+    const result = await query("SELECT id, name, description, photo FROM items WHERE id = $1", [id]);
+    const item = result.rows[0];
 
-  const obj = {
-    id: item.id,
-    name: item.name,
-    description: item.description,
-  };
-  if (includePhoto === "on" && item.photo) {
-    obj.photo_url = `/inventory/${item.id}/photo`;
+    if (!item) return res.sendStatus(404);
+
+    const obj = {
+      id: item.id,
+      name: item.name,
+      description: item.description,
+    };
+    if (includePhoto === "on" && item.photo) {
+      obj.photo_url = `/inventory/${item.id}/photo`;
+    }
+    res.status(200).json(obj);
+  } catch (error) {
+    res.status(500).send("Database error during search.");
   }
-  res.status(201).json(obj);
 });
 
-//    get:/search:
+// get:/search:
 
 /**
  * @swagger
@@ -369,21 +455,31 @@ app.post("/search", (req, res) => {
  *       404:
  *         description: Не знайдено
  */
-app.get("/search", (req, res) => {
+app.get("/search", async (req, res) => {
   const { id, includePhoto } = req.query;
-  const item = readDB().find((i) => i.id === id);
-  if (!item) return res.sendStatus(404);
-  const obj = {
-    id: item.id,
-    name: item.name,
-    description: item.description,
-  };
-  if (includePhoto === "on" && item.photo) {
-    obj.photo_url = `/inventory/${item.id}/photo`;
+
+  try {
+    const result = await query("SELECT id, name, description, photo FROM items WHERE id = $1", [id]);
+    const item = result.rows[0];
+
+    if (!item) return res.sendStatus(404);
+
+    const obj = {
+      id: item.id,
+      name: item.name,
+      description: item.description,
+    };
+    if (includePhoto === "on" && item.photo) {
+      obj.photo_url = `/inventory/${item.id}/photo`;
+    }
+    res.json(obj);
+  } catch (error) {
+    res.status(500).send("Database error during search.");
   }
-  res.json(obj);
 });
+
 app.use((_, res) => res.sendStatus(405));
+
 app.listen(port, host, () =>
-  console.log(`Server running at http://${host}:${port}`)
+  console.log(`Server running at http://${host}:${port} `) 
 );
