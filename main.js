@@ -1,14 +1,14 @@
-import 'dotenv/config'; // Завантажує змінні з .env
+import 'dotenv/config';
 import express from "express";
 import fs from "fs";
 import path from "path";
 import multer from "multer";
 import swaggerUi from "swagger-ui-express";
 import swaggerJsdoc from "swagger-jsdoc";
-import pkg from 'pg'; // Для роботи з PostgreSQL
+import pkg from 'pg'; 
 const { Client } = pkg;
 
-// --- КОНФІГУРАЦІЯ ЗІ ЗМІННИХ ОТОЧЕННЯ (process.env) ---
+
 const host = process.env.HOST || '0.0.0.0';
 const port = process.env.PORT || 3000;
 const cache = process.env.CACHE_DIR || './my-cache';
@@ -21,7 +21,7 @@ const dbConfig = {
   database: process.env.DB_NAME,
 };
 
-// Функція-обгортка для виконання SQL-запитів
+
 const query = async (text, params) => {
   const client = new Client(dbConfig);
   await client.connect();
@@ -35,12 +35,9 @@ const query = async (text, params) => {
     await client.end();
   }
 };
-// --- КІНЕЦЬ КОНФІГУРАЦІЇ ---
 
-// Створення директорії кешу для фотографій
 if (!fs.existsSync(cache)) fs.mkdirSync(cache, { recursive: true });
 
-// Налаштування Multer для збереження файлів у директорії кешу
 const storage = multer.diskStorage({
   destination: (_, __, cb) => cb(null, cache),
   filename: (_, file, cb) => cb(null, Date.now() + path.extname(file.originalname)),
@@ -243,7 +240,7 @@ app.put("/inventory/:id", async (req, res) => {
 
   if (setClauses.length === 0) return res.status(400).send("No fields to update.");
 
-  params.push(req.params.id); // ID завжди останній параметр
+  params.push(req.params.id); 
   const updateQuery = `UPDATE items SET ${setClauses.join(", ")} WHERE id = $${paramIndex} RETURNING *`;
 
   try {
@@ -318,19 +315,18 @@ app.put("/inventory/:id/photo", upload.single("photo"), async (req, res) => {
   if (!req.file) return res.status(400).send("No photo uploaded.");
 
   try {
-    // 1. Отримати старе ім'я файлу для видалення
+    
     let result = await query("SELECT photo FROM items WHERE id = $1", [req.params.id]);
     if (result.rowCount === 0) return res.sendStatus(404);
     const oldPhoto = result.rows[0].photo;
 
-    // 2. Оновити запис у БД новим ім'ям
     result = await query("UPDATE items SET photo = $1 WHERE id = $2 RETURNING *", [
       req.file.filename,
       req.params.id,
     ]);
     const item = result.rows[0];
 
-    // 3. Видалити старий файл
+   
     if (oldPhoto) {
       const oldPath = path.resolve(cache, oldPhoto);
       if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
@@ -361,17 +357,16 @@ app.put("/inventory/:id/photo", upload.single("photo"), async (req, res) => {
  */
 app.delete("/inventory/:id", async (req, res) => {
   try {
-    // 1. Отримати ім'я файлу для видалення
     let result = await query("SELECT photo FROM items WHERE id = $1", [req.params.id]);
     if (result.rowCount === 0) return res.sendStatus(404);
     const item = result.rows[0];
 
-    // 2. Видалити запис із БД
+  
     const deleteResult = await query("DELETE FROM items WHERE id = $1", [req.params.id]);
 
     if (deleteResult.rowCount === 0) return res.sendStatus(404);
 
-    // 3. Видалити файл (якщо є)
+ 
     if (item.photo) {
       const oldPath = path.resolve(cache, item.photo);
       if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
